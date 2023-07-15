@@ -18,8 +18,11 @@ namespace LibraryAPI.Models
         public string UserRole { get; set; } = string.Empty;
         public string Token { get; set; } = string.Empty;
         public string? ConfirmEmailToken { get; set; } = string.Empty;
+        public string? ResetPasswordToken { get; set;} = string.Empty;
         public DateTime CreatedOn { get; set; }
         public DateTime TokenExpiration { get; set; }
+        public DateTime ConfirmEmailTokenExpiration { get; set; }
+        public DateTime ResetPasswordTokenExpiration { get; set; }
         public ICollection<Book> Books { get; } = new List<Book>();
     }
 }

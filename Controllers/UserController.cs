@@ -47,11 +47,12 @@ namespace LibraryAPI.Controllers
             newUser.Token = "";
             newUser.Active = false;
             newUser.Blocked = false;
-            var tokenBytes = RandomNumberGenerator.GetBytes(64);
-            var emailToken = Convert.ToBase64String(tokenBytes);
+            newUser.ConfirmEmailTokenExpiration = DateTime.UtcNow.AddMinutes(15);
+
+            var emailToken = CreateToken();
             newUser.ConfirmEmailToken = emailToken;
             string from = _config["EmmailSettings:From"];
-            var emailObj = new Email(newUser.Email, "Confirmação de Conta", EmailBody.EmailStrinBody(newUser.Email, emailToken));
+            var emailObj = new Email(newUser.Email, "Confirmação de Conta", ConfirmEmailBody.EmailStringBody(newUser.Email, emailToken));
             _emailservice.SendMail(emailObj);
             await _dbContext.AddAsync(newUser);
             await _dbContext.SaveChangesAsync();
@@ -73,8 +74,11 @@ namespace LibraryAPI.Controllers
             var newToken = confirmEmail.EmailToken.Replace(" ", "+");
             var dbUser = await _dbContext.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Email == confirmEmail.Email);
             if (dbUser == null) return NotFound(new { Message = "Email não encontrado." });
+            
             var tokenCode = dbUser.ConfirmEmailToken;
-            if (tokenCode != confirmEmail.EmailToken) return BadRequest(new { Message = "Token inválido ou expirado." });
+            DateTime tokenExpirity = dbUser.ConfirmEmailTokenExpiration;
+
+            if (tokenCode != confirmEmail.EmailToken || tokenExpirity < DateTime.UtcNow) return BadRequest(new { Message = "Token inválido ou expirado." });
             dbUser.Active = true;
             _dbContext.Entry(dbUser).State = EntityState.Modified;
             await _dbContext.SaveChangesAsync();
@@ -125,6 +129,144 @@ namespace LibraryAPI.Controllers
             var jwtHandler = new JwtSecurityTokenHandler();
             var token = jwtHandler.CreateToken(tokenDescriptor);
             return jwtHandler.WriteToken(token);
+        }
+        private static string CreateToken()
+        {
+            var tokenBytes = RandomNumberGenerator.GetBytes(64);
+            var newToken = Convert.ToBase64String(tokenBytes);
+            return newToken;
+        }
+
+        [HttpGet("check-confirm-email-token-validity/{userEmail}")]
+
+        public async Task<bool> CheckConfirmEmailTokenValidity(string userEmail)
+        {
+            var dbUser = await _dbContext.Users.FirstOrDefaultAsync(u => u.Email == userEmail);
+            if (dbUser == null) return true;
+            DateTime userTokenExpiration = dbUser.ConfirmEmailTokenExpiration;
+            bool isTokenExpired = userTokenExpiration < DateTime.UtcNow;
+            return isTokenExpired;
+        }
+
+        [HttpGet("check-reset-password-token-validity/{userEmail}")]
+
+        public async Task<bool> CheckResetPasswordTokenValidity(string userEmail)
+        {
+            var dbUser = await _dbContext.Users.FirstOrDefaultAsync(u => u.Email == userEmail);
+            if (dbUser == null) return true;
+            DateTime userTokenExpiration = dbUser.ResetPasswordTokenExpiration;
+            bool isTokenExpired = userTokenExpiration < DateTime.UtcNow;
+            return isTokenExpired;
+        }
+
+        [HttpGet("check-is-already-verified/{userEmail}")]
+
+        public async Task<bool> CheckUserIsAlreadyVerified(string userEmail)
+        {
+            var dbUser = await _dbContext.Users.FirstOrDefaultAsync(u => u.Email == userEmail);
+            if (dbUser == null) return false;
+
+            bool isUserActive = dbUser.Active;
+            return isUserActive;
+        }
+
+        [HttpPost("send-reset-password/{email}")]
+
+        public async Task <IActionResult> SendEmail(string email)
+        {
+            var dbUser = await _dbContext.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+            if (dbUser == null) return BadRequest(new { Message = "Não foi encontrado nenhum usuário para este email." });
+
+            var resetPasswordEmailToken = CreateToken();
+
+            dbUser.ResetPasswordToken = resetPasswordEmailToken;
+            dbUser.ResetPasswordTokenExpiration = DateTime.UtcNow.AddMinutes(15);
+            string from = _config["EmmailSettings:From"];
+            var resetEmailObj = new Email(email, "Redefinição de senha", ResetPasswordEmailBody.EmailStringBody(email, resetPasswordEmailToken));
+            _emailservice.SendMail(resetEmailObj);
+            await _dbContext.SaveChangesAsync();
+            return Ok(new
+            {
+                Message = "Email de redefinição de senha enviado."
+            });
+        }
+
+        [HttpPost("resend-reset-password/{email}")]
+
+        public async Task<IActionResult> ResendPasswordEmail(string email)
+        {
+            var dbUser = await _dbContext.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+            var newResetPasswordToken = CreateToken();
+
+            if(newResetPasswordToken == dbUser.ResetPasswordToken)
+            {
+                while(newResetPasswordToken == dbUser.ResetPasswordToken)
+                {
+                    newResetPasswordToken = CreateToken();
+                }
+            }
+
+            dbUser.ResetPasswordToken = newResetPasswordToken;
+            dbUser.ResetPasswordTokenExpiration = DateTime.UtcNow.AddMinutes(15);
+            var resendResetEmailObj = new Email(email, "Reenvio de Redefinição de senha", ResetPasswordEmailBody.EmailStringBody(email, newResetPasswordToken));
+            _emailservice.SendMail(resendResetEmailObj);
+            await _dbContext.SaveChangesAsync();
+            return Ok(new
+            {
+                Message = "Email reenviado com sucesso."
+            });
+        }
+
+        [HttpPost("resend-confirmation-email/{email}")]
+
+        public async Task<IActionResult> ResendConfirmationEmail(string email)
+        {
+            var dbUser = await _dbContext.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+            var newConfirmationEmailToken = CreateToken();
+
+            if(newConfirmationEmailToken == dbUser.ConfirmEmailToken)
+            {
+                while(newConfirmationEmailToken == dbUser.ConfirmEmailToken)
+                {
+                    newConfirmationEmailToken = CreateToken();
+                }
+            }
+
+            dbUser.ConfirmEmailToken = newConfirmationEmailToken;
+            dbUser.ConfirmEmailTokenExpiration = DateTime.UtcNow.AddMinutes(15);
+            var resendConfirmEmailObj = new Email(email, "Reenvio de confirmação de conta", ConfirmEmailBody.EmailStringBody(email, newConfirmationEmailToken));
+            _emailservice.SendMail(resendConfirmEmailObj);
+            await _dbContext.SaveChangesAsync();
+            return Ok(new
+            {
+                Message = "Email reenviado com sucesso."
+            });
+        }
+
+        [HttpPost("reset-password")]
+
+        public async Task <IActionResult> ResetPassword(ResetPasswordDTO resetPassword)
+        {
+            var newToken = resetPassword.ResetPasswordToken?.Replace(" ", "+");
+            var dbUser = await _dbContext.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Email == resetPassword.Email);
+
+            if (dbUser == null) return BadRequest(new { Message = "Usuário não encontrado para o email fornecido." });
+
+            var tokenCode = dbUser.ResetPasswordToken;
+            DateTime tokenExpirity = dbUser.ResetPasswordTokenExpiration;
+
+            if (tokenCode != resetPassword.ResetPasswordToken || tokenExpirity < DateTime.UtcNow) return BadRequest(new { Message = "Token inválido." });
+
+            dbUser.Password = Hasher.HashPassword(resetPassword.NewPassword);
+            _dbContext.Entry(dbUser).State = EntityState.Modified;
+            await _dbContext.SaveChangesAsync();
+            return Ok(new
+            {
+                Message = "Senha redefinida com sucesso"
+            });
         }
 
         [HttpPut("blockUser/{userID}")]
